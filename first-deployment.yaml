@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: first-deployment
+spec:
+  replicas: 3
+  minReadySeconds: 5
+  selector:
+    matchLabels:
+      app: hello-deploy
+  template:
+    metadata:
+      name: hello-deploy-pod
+      labels:
+        app: hello-deploy
+    spec:
+      containers:
+      - name: hello-deploy
+        # image: k8s.gcr.io/echoserver:1.10
+        image: jmalloc/echo-server:latest
+        ports:
+        - containerPort: 8080
