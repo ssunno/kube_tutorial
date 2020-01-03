@@ -17,6 +17,160 @@ Docker for Mac에서 Kubernetes 사용을 지원하므로 이를 사용해서 �
 * Docker Engine 19.03.4
 * Kubernetes v1.14.7
 
+------
+#### 2주차 기록
+
+##### Service 타입 변경
+
+이전 주차에서 Service 생성시 사용한 LoadBalancer는 다양한 kubernetes 외부 밸런서가 존재한다.
+
+> 1주차에서 LoadBalancer는 Docker for Mac에 내장된 nginx가 아닐지 싶다.
+
+이를 kubernetes 기본 제공인 ClusterIP로 변경하기:
+
+* ~~type: LoadBalancer~~
+* type: ClusterIP
+
+ClusterIP는 kubernetes 클러스터 내에서 다른 서비스들이 접근할 수 있게 내부 IP를 할당하기 때문에 k8s클러스터 외부에서는 접근할 수 없다.
+
+기존에 LoadBalancer 타입으로 만든 서비스를 삭제하고 ClusterIP 타입으로 만든 서비스를 다시 올림.
+~~~
+> kubectl delete service hello-service
+service "hello-service" deleted
+
+> kubectl get svc
+NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   6d
+
+> kubectl create -f first-service.yaml
+service/hello-service created
+> kubectl get svc
+NAME            TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+hello-service   ClusterIP   10.98.247.37   <none>        80/TCP    5s
+kubernetes      ClusterIP   10.96.0.1      <none>        443/TCP   6d
+~~~
+
+##### LoadBalancer 조사
+
+로드밸런서는 서비스를 외부로 노출시키는 방법 중 하나이다. 로드밸런서는 IP주소를 제공하고 지정된 포트로 들어오는 모든 트래픽을 Service로 포워딩 해 주는 역할을 한다. 주로 클라우드 벤더(구글 등)에서 제공하는 load balancer를 사용하며 이 때는 비용이 부과될 수 있음.
+
+Host based Load Balancer는 Ingress 컴포넌트에서 HTTP 주소 기반 L7 로드밸런싱을 지원한다. Ingress는 여러 서비스 앞에서 라우터로써 다양한 기능을 제공할 수 있다. ex)Google, Amazon 등에서 제공하는 로드밸런서는 Ingress 형태로 경로 기반 라우팅과 서브도메인 기반 라우팅을 모두 지원한다.
+
+Ingress 설정은 컴포넌트 타입을 Ingress로 정의하고 Path 또는 subdomain 기반으로 라우팅할 서비스 정보를 넣어서 생성하면 된다. Ingress는 L7 이므로 SSL, Auth 같은 기능을 추가로 제공 할 수도 있다.
+
+
+##### Service 개념 정리
+
+1주차에 생성한 Service는 first-deployment에 의해 관리되는 3개의 Pod에 대한 라우팅을 담당함. Service에서 보이는 Endpoint는 3개로 각 Pod가 쿠버네티스 클러스터 내에서 부여받는 내부 주소이다.
+
+~~~
+> kubectl describe service hello-service
+Name:              hello-service
+Namespace:         default
+Labels:            <none>
+Annotations:       <none>
+Selector:          app=hello-deploy
+Type:              ClusterIP
+IP:                10.98.247.37
+Port:              http  80/TCP
+TargetPort:        8080/TCP
+Endpoints:         10.1.0.20:8080,10.1.0.21:8080,10.1.0.22:8080
+Session Affinity:  None
+Events:            <none>
+~~~
+
+ClusterIP 타입이므로 k8s 클러스터 외부에서 해당 서비스로 접근할 수는 없다. 임시로 내부 네트워크에서 접근을 테스트하기 위해 pod를 하나 생성하고 bash로 ClusterIP에 요청을 테스트 했다:
+
+~~~
+> kubectl apply -f https://k8s.io/examples/application/shell-demo.yaml
+
+pod/shell-demo created
+> kubectl get pods
+NAME                              READY   STATUS    RESTARTS   AGE
+first-deployment-fbf887d8-j44hj   1/1     Running   2          7d
+first-deployment-fbf887d8-q687v   1/1     Running   2          7d
+first-deployment-fbf887d8-vjjkj   1/1     Running   2          7d
+shell-demo                        1/1     Running   0          18s
+
+> kubectl exec -it shell-demo -- /bin/bash
+...
+root@docker-desktop:/# curl 10.98.247.37
+Request served by first-deployment-fbf887d8-vjjkj
+
+HTTP/1.1 GET /
+
+Host: 10.98.247.37
+User-Agent: curl/7.64.0
+Accept: */*
+
+root@docker-desktop:/# curl 10.98.247.37
+Request served by first-deployment-fbf887d8-j44hj
+
+HTTP/1.1 GET /
+
+Host: 10.98.247.37
+User-Agent: curl/7.64.0
+Accept: */*
+~~~
+
+shell-demo Pod를 통해 접근시 Pod에 접근이 가능하다. Endpoint는 Pod가 노드 내에서 임시로 부여받는 주소이므로 endpoint 주소로 curl 명령을 보내도 동작한다:
+
+~~~
+root@docker-desktop:/# curl 10.1.0.20:8080
+Request served by first-deployment-fbf887d8-vjjkj
+
+HTTP/1.1 GET /
+
+Host: 10.1.0.20:8080
+User-Agent: curl/7.64.0
+Accept: */*
+
+root@docker-desktop:/# curl 10.1.0.21:8080
+Request served by first-deployment-fbf887d8-j44hj
+
+HTTP/1.1 GET /
+
+Host: 10.1.0.21:8080
+User-Agent: curl/7.64.0
+Accept: */*
+
+root@docker-desktop:/# curl 10.1.0.22:8080
+Request served by first-deployment-fbf887d8-q687v
+
+HTTP/1.1 GET /
+
+Host: 10.1.0.22:8080
+User-Agent: curl/7.64.0
+Accept: */*
+~~~
+
+하지만 Endpoint는 pod가 재시작 된다거나 할 때 바뀔 수 있으므로 Endpoint 주소를 외부에서 사용하는 것은 바람직하지 않다. Service는 이같은 경우에서 연결된 Pod들의 Endpoint를 관리하고 여러개로 띄워진 Pod에 단일 IP를 제공하게 된다.
+
+
+##### 쿠버네티스 클러스터 내부에서 curl 10.98.247.37 요청시 흐름
+
+1. docker-desktop 내 shell-demo 에서 curl 요청
+2. shell-demo 가상 이더넷 컨트롤러에서 10.98.247.37 정보를 모르기 때문에 상위 이더넷 컨트롤러(docker-desktop node 컨트롤러)로 전달.
+3. 10.98.247.37(hello-service)가 노드(docker-desktop) 상에 있으므로 hello-service로 요청을 전달
+4. hello-service가 연결된 3개의 Pod 중 하나를 선택하고 선택한 Pod의 Endpoint 주소로 요청을 전달
+5. Endpoint 주소에 해당하는 Pod에서 echo-server 동작 실행
+
+> kube-proxy는 노드마다 존재하는 proxy로, 노드 내로 라우팅 되어야 하는 패킷을 iptables 로 관리하고 업데이트 하는 일을 한다고 함. 자세한 동작은 더 알아봐야 겠으나 이 경우 실제로는 shell-demo 에서 echo-server Pod로 바로 전달되는 것 같기도 함.
+
+##### L7 Load Balancer가 포함된 curl 요청 흐름
+
+1. **k8s cluster 외부**에서 Load Balancer의 domain주소로 curl 요청 -- LoadBalancer가 host 주소를 가지고 있어야 한다.
+2. LoadBalancer 내에서 사전 정의된 path(or subdomain)과 Service 매핑 규칙에 따라 트래픽을 해당 Service(hello-service)로 포워딩
+3. hello-service가 연결된 3개의 Pod 중 하나를 선택하고 선택한 Pod의 Endpoint 주소로 요청을 전달
+4. Endpoint 주소에 해당하는 Pod에서 echo-server 동작 실행
+
+> 클러스터 내부에서 접근할 때와 다른점은 2번으로, 외부 요청에 대해 사전정의한 규칙대로 Service를 매핑한다. 이 LoadBalancer를 정의할 때 service의 clusterIP를 지정할 필요는 없고 ServiceName과 clusterIP의 port를 작성한다.
+
+> Google Cloud의 LoadBalancer를 사용할 때는 서비스를 NodePort 타입으로 지정한다. NodePort는 모든 노드의 특정 포트가 하나의 서비스로 연결되는 방식이다. 어떤 노드에서건 해당 nodePort로 연결을 시도하면 지정된 서비스로 포워딩 된다고 한다.
+
+------
+
+#### 1주차 기록
 
 ##### HTTP 에코 서버 deployment
 
@@ -201,3 +355,6 @@ Accept: */*
 * Minikube를 사용하려고 했으나 service 등록 부분에서 loadBalancer 문제로 진행이 안됐음.
 * Windows 10 환경에서는 진행에 문제가 있어 포기함. (도커가 win10 Pro 부터 제대로 지원)
 * 클라우드 환경 에서도 시도 해 볼 예정
+
+
+
