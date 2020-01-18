@@ -18,6 +18,138 @@ Docker for Mac에서 Kubernetes 사용을 지원하므로 이를 사용해서 �
 * Kubernetes v1.14.7
 
 ------
+
+#### 3주차 기록
+
+Kubernetes API를 사용하기 위한 언어로 파이썬을 사용했다.
+
+~~~ python
+# Python에서 k8s API를 사용하기 위한 패키지 설치
+> pip install kubernetes
+Collecting kubernetes
+  Downloading https://files.pythonhosted.org/packages/6e/fc/2cab119f679648b348b8940de0dd744a1f0ee99c690aa2ef6072f050816c/kubernetes-10.0.1-py2.py3-none-any.whl (1.5MB)
+    100% |████████████████████████████████| 1.5MB 7.8MB/s
+...
+Successfully installed cachetools-4.0.0 google-auth-1.10.1 kubernetes-10.0.1 oauthlib-3.1.0 pyasn1-0.4.8 pyasn1-modules-0.2.8 requests-oauthlib-1.3.0 rsa-4.0 urllib3-1.25.7 websocket-client-0.57.0
+~~~
+
+Python에서 k8s API를 사용해서 접근하려면 먼저 *kubeconfig*를 사용해 k8s 클러스터와 연결해야 한다.
+
+> 실험 환경인 Docker for Mac 의 k8s 환경은 로컬에 설치되기 때문에, API 사용시 kubeconfig를 따로 지정하지 않으면 $HOME/.kube/config 를 기본으로 사용해서 로컬에 접속 할 수 있다.
+
+*kubeconfig* 는 k8s 클러스터 접근을 위한 정보(certificate auth data, cluster context, user context 등) 들을 가지고 있다. *kubectl config view* 명령어로 현재 연결된 *kubeconfig*를 확인 할 수 있다. 여러 개의 *kubconfig*를 가지고 있으면 context를 변경해서 여러 클러스터에 접근 할 수도 있다.
+
+~~~ shell
+> kubectl config view
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: DATA+OMITTED
+    server: https://kubernetes.docker.internal:6443
+  name: docker-desktop
+contexts:
+...
+~~~
+
+> $HOME/.kube/config 에서 config 실제 config 인증 키와 같은 정보들을 가지고 있다.
+
+**Python kubernetes client API** 에서는 *{k8s client API}.config.load_kube_config()* 메서드로 config file을 선택하거나 context를 직접 지정할 수 있다. 매개변수로 아무것도 입력하지 않으면 kubctl 에서 설정된 context를 기본으로 사용한다.
+
+* Pod 리스트를 얻어오는 기능은 *{k8s client API}.CoreV1Api.list_pod_for_all_namespaces()* 메서드를 사용한다.
+* k8s 상태를 모니터링 하는 기능으로는 *{k8s client API}.watch.Watch()* 를 사용해서 pod의 list 상태를 지속적으로 감시할 수 있다.
+
+~~~ Python
+######## python 코드(pods_watcher.py) ########
+import kubernetes as k8s
+# get kubernetes config.
+k8s.config.load_kube_config()
+
+def watch_pods(timeout=120):
+    """Notice when pod created & deleted
+
+    Keyword Arguments:
+        timeout {int} -- how long watch k8s status (default: {120})
+    """
+    # dictionary of type-message pair
+    watch_type = {'ADDED': 'Hello',
+                  'DELETED': 'Good bye'}
+    api = k8s.client.CoreV1Api()
+    watcher = k8s.watch.Watch()
+    stream = watcher.stream(api.list_pod_for_all_namespaces, timeout_seconds=timeout)
+    for raw_event in stream:
+        if raw_event['type'] in watch_type.keys():
+            print('%s, %s' % (watch_type[raw_event['type']], raw_event['object'].metadata.name))
+~~~
+
+Pod리스트를 가져오는 기능을 감시하고 있으면 Pod 상태가 변화할 때 마다 stream 으로 알려준다.
+
+##### 동작 확인
+
+현재 pod 상태는 1주차에 생성한 *first-deployment* 가 3개의 Pod를 유지하고 있는 상태.
+
+~~~ shell
+> kubectl get pods
+NAME                              READY   STATUS    RESTARTS   AGE
+first-deployment-fbf887d8-9bv8b   1/1     Running   0          40h
+first-deployment-fbf887d8-hc7lf   1/1     Running   0          40h
+first-deployment-fbf887d8-pgc8t   1/1     Running   0          16h
+shell-demo                        1/1     Running   1          14d
+~~~
+
+*pods_watcher.py* 를 실행해서 k8s 상태를 모니터링 한다.
+~~~ shell
+> python3 pods_watcher.py
+Hello, etcd-docker-desktop
+Hello, kube-scheduler-docker-desktop
+Hello, compose-api-57ff65b8c7-drzbz
+Hello, coredns-6dcc67dcbc-g9s2b
+Hello, coredns-6dcc67dcbc-zmkm7
+Hello, compose-6c67d745f6-9vjx6
+Hello, kube-apiserver-docker-desktop
+Hello, kube-proxy-gmljx
+Hello, first-deployment-fbf887d8-9bv8b
+Hello, first-deployment-fbf887d8-pgc8t
+Hello, shell-demo
+Hello, kube-controller-manager-docker-desktop
+Hello, first-deployment-fbf887d8-hc7lf
+~~~
+
+생성된 3개의 Pod 중 하나(*first-deployment-fbf887d8-9bv8b*)를 삭제하면, pods_watcher에 삭제 이벤트가 기록된다.
+~~~ shell
+...
+Hello, kube-controller-manager-docker-desktop
+Hello, first-deployment-fbf887d8-hc7lf
+Hello, first-deployment-fbf887d8-nbtml
+Good bye, first-deployment-fbf887d8-9bv8b
+~~~
+
+> 이 때 새로운 Pod(first-deployment-fbf887d8-nbtml)가 생성되는 것은 first-deployment가 3개의 Pod를 유지시키려고 하기 때문에 kubectl로 삭제한 Pod를 대신해서 새 Pod를 띄운 것이다.
+
+deployment에서 replica를 조정하는 예시(replicas: 3 -> 1):
+~~~ yaml
+# first-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: first-deployment
+spec:
+  replicas: 1
+  ...
+~~~
+
+~~~ shell
+> kubectl apply -f first-deployment.yaml
+deployment.apps/first-deployment configured
+
+// in pods_watcher.py
+...
+Good bye, first-deployment-fbf887d8-nbtml
+Good bye, first-deployment-fbf887d8-pgc8t
+~~~
+
+
+------
+
 #### 2주차 기록
 
 ##### Service 타입 변경

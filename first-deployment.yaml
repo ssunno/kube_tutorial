@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: first-deployment
 spec:
-  replicas: 3
+  replicas: 2
   minReadySeconds: 5
   selector:
     matchLabels:
